@@ -1,0 +1,34 @@
+{
+    "ACC-001": {
+        "titular": "Carlos Mendoza",
+        "saldo": 450000.0,
+        "estado": "ACTIVA",
+        "historial": [
+            {
+                "tipo": "DEBITO",
+                "monto": 50000.0,
+                "target": "ACC-002",
+                "fecha": "2026-06-03 19:58:13.859374"
+            }
+        ]
+    },
+    "ACC-002": {
+        "titular": "Ana Gomez",
+        "saldo": 62000.0,
+        "estado": "ACTIVA",
+        "historial": [
+            {
+                "tipo": "CREDITO",
+                "monto": 50000.0,
+                "target": "ACC-001",
+                "fecha": "2026-06-03 19:58:13.859374"
+            }
+        ]
+    },
+    "ACC-003": {
+        "titular": "Juan Perez",
+        "saldo": 1000000.0,
+        "estado": "BLOQUEADA",
+        "historial": []
+    }
+}

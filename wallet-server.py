@@ -1,18 +1,15 @@
 import json
-import os
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
-DATA_FILE = "accounts.json"
+# Importamos nuestros componentes de la Arquitectura Limpia
+from src.adapters.repository import JSONAccountRepository
+from src.use_cases.get_balance import GetAccountDetailUseCase
+from src.use_cases.transfer_money import TransferMoneyUseCase
+from src.infrastructure.middleware import SecurityMiddleware
 
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({
-            "ACC-001": {"titular": "Carlos Mendoza", "saldo": 500000.0, "estado": "ACTIVA", "historial": []},
-            "ACC-002": {"titular": "Ana Gomez", "saldo": 12000.0, "estado": "ACTIVA", "historial": []},
-            "ACC-003": {"titular": "Juan Perez", "saldo": 1000000.0, "estado": "BLOQUEADA", "historial": []}
-        }, f, indent=4)
+# Instanciamos el repositorio único (con su Mutex compartido)
+repo = JSONAccountRepository()
 
 class PaymentGatewayAPI(BaseHTTPRequestHandler):
 
@@ -28,17 +25,19 @@ class PaymentGatewayAPI(BaseHTTPRequestHandler):
         query = parse_qs(url_parsed.query)
 
         if path == "/api/v1/accounts/detail":
-            account_id = query.get("id")[0] 
-            
-            with open(DATA_FILE, "r") as f:
-                db = json.load(f)
-
-            if account_id in db:
-                self._response(db[account_id])
-            else:
-                self._response({"error": "Not Found"}, 404)
-        else:
-            self._response({"msg": "Gateway Ready"}, 200)
+            try:
+                account_id = query.get("id")[0] if query.get("id") else None
+                use_case = GetAccountDetailUseCase(repo)
+                result = use_case.execute(account_id)
+                return self._response(result, 200)
+            except ValueError as e:
+                return self._response({"error": str(e)}, 400)
+            except LookupError as e:
+                return self._response({"error": str(e)}, 404)
+            except Exception:
+                return self._response({"error": "Internal Server Error"}, 500)
+        
+        self._response({"msg": "Gateway Ready"}, 200)
 
     def do_POST(self):
         url_parsed = urlparse(self.path)
@@ -46,62 +45,51 @@ class PaymentGatewayAPI(BaseHTTPRequestHandler):
 
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
-        
+
         try:
             payload = json.loads(body.decode("utf-8"))
         except Exception:
             return self._response({"error": "Bad Request JSON"}, 400)
 
+        # RUTA: Transferencias
         if path == "/api/v1/transactions/transfer":
-            origin = payload.get("desde")
-            destiny = payload.get("hacia")
-            amount = payload.get("monto") 
+            try:
+                use_case = TransferMoneyUseCase(repo)
+                result = use_case.execute(
+                    origin_id=payload.get("desde"),
+                    destiny_id=payload.get("hacia"),
+                    amount=payload.get("monto")
+                )
+                return self._response(result, 200)
+            except ValueError as e:
+                return self._response({"error": str(e)}, 400)
+            except PermissionError as e:
+                return self._response({"error": str(e)}, 403)
+            except LookupError as e:
+                return self._response({"error": str(e)}, 404)
+            except Exception:
+                return self._response({"error": "Error inesperado en el core"}, 500)
 
-            with open(DATA_FILE, "r") as f:
-                db = json.load(f)
-
-            if origin in db and destiny in db:
-                if db[origin]["estado"] == "ACTIVA":
-                    if db[origin]["saldo"] >= amount:
-                        
-                        time.sleep(0.5) 
-
-                        db[origin]["saldo"] -= amount
-                        db[destiny]["saldo"] += amount
-
-                        db[origin]["historial"].append({"tipo": "DEBITO", "monto": amount, "target": destiny})
-                        db[destiny]["historial"].append({"tipo": "CREDITO", "monto": amount, "target": origin})
-
-                        with open(DATA_FILE, "w") as f:
-                            json.dump(db, f, indent=4)
-
-                        return self._response({"status": "SUCCESS", "message": "Transferencia procesada"})
-                    else:
-                        return self._response({"error": "Fondos insuficientes"}, 400)
-                else:
-                    return self._response({"error": "Cuenta de origen no disponible"}, 403)
-            else:
-                return self._response({"error": "Cuentas no encontradas"}, 404)
-
+        # RUTA: Administrativa Protegida con Middleware
         elif path == "/api/v1/accounts/admin/bypass-status":
+            if not SecurityMiddleware.is_authorized(self.headers):
+                return self._response({"error": "No autorizado. Token de administración inválido."}, 401)
+
             acc_id = payload.get("id")
             new_status = payload.get("status")
+
+            account = repo.find_by_id(acc_id)
+            if account:
+                account.estado = new_status
+                repo.save(account)
+                return self._response({"status": "CHANGED", "message": f"Estado cambiado a {new_status}"}, 200)
             
-            with open(DATA_FILE, "r") as f:
-                db = json.load(f)
-                
-            if acc_id in db:
-                db[acc_id]["estado"] = new_status
-                with open(DATA_FILE, "w") as f:
-                    json.dump(db, f, indent=4)
-                return self._response({"status": "CHANGED"})
-            
-            return self._response({"error": "Not Found"}, 404)
+            return self._response({"error": "Cuenta no encontrada"}, 404)
 
         self._response({"error": "Endpoint inválido"}, 404)
 
 def run(port=8500):
-    server_address = ('', port)
+    server_address = ('0.0.0.0', port)
     httpd = HTTPServer(server_address, PaymentGatewayAPI)
     print(f"💰 Core Bancario / API Gateway corriendo en puerto {port}...")
     try:
